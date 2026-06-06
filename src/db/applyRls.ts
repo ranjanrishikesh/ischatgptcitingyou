@@ -26,6 +26,18 @@ async function main() {
   const sql = postgres(url, { max: 1 });
 
   const runtimeRole = process.env.RUNTIME_DB_ROLE;
+  // If a separate owner role is in use, the runtime role MUST be named or it
+  // receives no grants/EXECUTE and the app is broken (fails closed, but silently).
+  if (
+    process.env.DATABASE_OWNER_URL &&
+    process.env.DATABASE_OWNER_URL !== process.env.DATABASE_URL &&
+    !runtimeRole
+  ) {
+    throw new Error(
+      "RUNTIME_DB_ROLE must be set (= the DATABASE_URL login role) when DATABASE_OWNER_URL " +
+        "differs from DATABASE_URL — otherwise the runtime role gets no grants.",
+    );
+  }
 
   try {
     for (const table of TENANT_TABLES) {
@@ -103,6 +115,57 @@ async function main() {
     );
     // eslint-disable-next-line no-console
     console.log(`ingest_resolve() created (SECURITY DEFINER, id-scoped); resolver-read policy -> ${owner}`);
+
+    // Membership resolver — auth must map a user to their orgs BEFORE any org GUC
+    // is set (same bootstrap as source). Definer reads membership; the runtime
+    // role stays scoped by tenant_isolation. The function is user-id-scoped.
+    await sql.unsafe(`DROP POLICY IF EXISTS membership_resolver_read ON "membership";`);
+    await sql.unsafe(
+      `CREATE POLICY membership_resolver_read ON "membership" FOR SELECT TO "${owner}" USING (true);`,
+    );
+    await sql.unsafe(`
+      CREATE OR REPLACE FUNCTION user_memberships(p_user_id text)
+      RETURNS TABLE (org_id uuid, role text)
+      LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+        SELECT m.org_id, m.role::text FROM membership m
+        WHERE m.user_id = p_user_id
+        ORDER BY m.created_at ASC, m.org_id ASC;
+      $$;
+    `);
+    await sql.unsafe(`REVOKE ALL ON FUNCTION user_memberships(text) FROM PUBLIC;`);
+    if (runtimeRole) {
+      await sql.unsafe(`GRANT EXECUTE ON FUNCTION user_memberships(text) TO "${runtimeRole}";`);
+      // Auth tables are not tenant-scoped — grant the runtime role plain DML.
+      for (const t of ["user", "session", "account", "verification"]) {
+        await sql.unsafe(`GRANT SELECT, INSERT, UPDATE, DELETE ON "${t}" TO "${runtimeRole}";`);
+      }
+    }
+    // eslint-disable-next-line no-console
+    console.log("user_memberships() created; auth-table grants applied");
+
+    // Route triple-equality DB backstop: a route's org MUST match both its source
+    // and destination org. Runs as invoker, so under RLS a cross-org source/dest
+    // is invisible (NULL) and rejected. Belt to the app-layer existence checks.
+    await sql.unsafe(`
+      CREATE OR REPLACE FUNCTION route_triple_equality() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      DECLARE s_org uuid; d_org uuid;
+      BEGIN
+        SELECT org_id INTO s_org FROM source WHERE id = NEW.source_id;
+        SELECT org_id INTO d_org FROM destination WHERE id = NEW.destination_id;
+        IF s_org IS NULL OR d_org IS NULL OR NEW.org_id <> s_org OR NEW.org_id <> d_org THEN
+          RAISE EXCEPTION 'route org mismatch: source/destination must belong to the route org';
+        END IF;
+        RETURN NEW;
+      END;
+      $$;
+    `);
+    await sql.unsafe(`DROP TRIGGER IF EXISTS route_triple_equality_trg ON "route";`);
+    await sql.unsafe(
+      `CREATE TRIGGER route_triple_equality_trg BEFORE INSERT OR UPDATE ON "route" FOR EACH ROW EXECUTE FUNCTION route_triple_equality();`,
+    );
+    // eslint-disable-next-line no-console
+    console.log("route_triple_equality trigger created");
 
     // eslint-disable-next-line no-console
     console.log("All tenant tables forced + isolated.");

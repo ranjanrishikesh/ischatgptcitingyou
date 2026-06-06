@@ -44,11 +44,13 @@ internet → ingest endpoint · browser → control plane · worker → destinat
 - **No auto-recharge cap** (a product decision). A bot storm could run up charges; we mitigate
   with per-charge email + spike alerts, not a hard ceiling. Documented so it's a choice, not a
   surprise.
-- **Bearer revocation latency**: the drain resolves a source from a short (≤5s) in-process
-  cache holding its bearer hash + status, so a rotated/revoked bearer keeps authenticating for
-  up to that window per warm instance. Bounded + documented. When rotation/revocation ships
-  (M4) it must also publish a cross-process invalidation (per-process cache delete is not enough
-  for a multi-instance hosted deploy).
+- **Credential revocation SLA (multi-instance hosted)**: caches are in-process, so rotating a
+  source bearer / disabling a source / rotating a destination credential busts only the local
+  instance. Fleet-wide staleness is bounded by the cache TTLs: **≤5s** for a source bearer/status,
+  **≤30s** for a destination credential. The rotation APIs call the local invalidators; a
+  cross-process invalidation (Redis pub/sub or a versioned key) is deferred hardening (M6) — until
+  then the TTLs above are the revocation SLA. For instant fleet-wide revocation, restart instances
+  or rely on the upstream key being independently revoked at the destination.
 - **Ingest IP trust**: the pre-auth rate limiter keys on the platform-trusted client IP
   (`x-real-ip` / right-most XFF hop), never the spoofable left-most XFF. Self-host operators
   behind a different proxy topology must ensure the same trusted-hop assumption.

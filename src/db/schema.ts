@@ -55,11 +55,57 @@ export const ledgerKind = pgEnum("ledger_kind", [
 // --- Identity --------------------------------------------------------------
 // `account` is global to a person (auth). Not org-scoped. Better Auth manages
 // its own session/credential tables separately; this is the app-side profile.
-export const account = pgTable("account", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  email: text("email").notNull().unique(),
+// --- Auth (Better Auth managed; NOT tenant-scoped) -------------------------
+// These tables follow Better Auth's core schema. They hold identity/session, not
+// tenant data, so they are intentionally OUTSIDE the RLS tenant boundary.
+export const user = pgTable("user", {
+  id: text("id").primaryKey(),
   name: text("name"),
+  email: text("email").notNull().unique(),
+  emailVerified: boolean("email_verified").notNull().default(false),
+  image: text("image"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const session = pgTable("session", {
+  id: text("id").primaryKey(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  token: text("token").notNull().unique(),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const authAccount = pgTable("account", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull(),
+  providerId: text("provider_id").notNull(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  accessToken: text("access_token"),
+  refreshToken: text("refresh_token"),
+  idToken: text("id_token"),
+  accessTokenExpiresAt: timestamp("access_token_expires_at", { withTimezone: true }),
+  refreshTokenExpiresAt: timestamp("refresh_token_expires_at", { withTimezone: true }),
+  scope: text("scope"),
+  password: text("password"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const verification = pgTable("verification", {
+  id: text("id").primaryKey(),
+  identifier: text("identifier").notNull(),
+  value: text("value").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 // The tenant boundary. Holds the wrapped per-tenant DEK.
@@ -79,15 +125,16 @@ export const membership = pgTable(
     orgId: uuid("org_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    accountId: uuid("account_id")
+    userId: text("user_id")
       .notNull()
-      .references(() => account.id, { onDelete: "cascade" }),
+      .references(() => user.id, { onDelete: "cascade" }),
     role: memberRole("role").notNull().default("member"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    uniqAcctOrg: unique("membership_acct_org").on(t.accountId, t.orgId),
+    uniqUserOrg: unique("membership_user_org").on(t.userId, t.orgId),
     byOrg: index("membership_org_idx").on(t.orgId),
+    byUser: index("membership_user_idx").on(t.userId),
   }),
 );
 

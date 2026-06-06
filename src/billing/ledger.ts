@@ -37,7 +37,17 @@ export interface AppendResult {
 }
 
 /** Append a ledger entry and reconcile the materialized balance, atomically. */
-export async function appendLedger(orgId: string, input: AppendInput): Promise<AppendResult> {
+type LedgerDb = Parameters<Parameters<typeof withOrg>[1]>[0];
+
+/**
+ * Append + reconcile balance WITHIN an existing org transaction. Lets callers
+ * (e.g. provisioning) commit the ledger entry atomically with other writes.
+ */
+export async function appendLedgerTx(
+  db: LedgerDb,
+  orgId: string,
+  input: AppendInput,
+): Promise<AppendResult> {
   // CREDITS must be idempotent. Usage debits intentionally carry no key (every
   // batch applies); any credit (purchase/recharge/refund/grant/adjustment)
   // without a key would get NO double-credit protection (NULLs are distinct in
@@ -45,40 +55,41 @@ export async function appendLedger(orgId: string, input: AppendInput): Promise<A
   if (input.kind !== "usage" && !input.idempotencyKey) {
     throw new Error(`appendLedger: credit kind '${input.kind}' requires an idempotencyKey`);
   }
-  return withOrg(orgId, async (db) => {
-    const inserted = await db
-      .insert(ledgerEntry)
-      .values({
-        orgId,
-        kind: input.kind,
-        amountMicros: input.amountMicros,
-        idempotencyKey: input.idempotencyKey ?? null,
-        stripePaymentIntentId: input.stripePaymentIntentId ?? null,
-        meta: input.meta ?? {},
-      })
-      .onConflictDoNothing({ target: [ledgerEntry.orgId, ledgerEntry.idempotencyKey] })
-      .returning({ id: ledgerEntry.id });
+  const inserted = await db
+    .insert(ledgerEntry)
+    .values({
+      orgId,
+      kind: input.kind,
+      amountMicros: input.amountMicros,
+      idempotencyKey: input.idempotencyKey ?? null,
+      stripePaymentIntentId: input.stripePaymentIntentId ?? null,
+      meta: input.meta ?? {},
+    })
+    .onConflictDoNothing({ target: [ledgerEntry.orgId, ledgerEntry.idempotencyKey] })
+    .returning({ id: ledgerEntry.id });
 
-    if (inserted.length === 0) {
-      // Idempotent no-op: return current balance unchanged.
-      const cur = await currentBalance(db, orgId);
-      return { applied: false, balanceMicros: cur };
-    }
+  if (inserted.length === 0) {
+    const cur = await currentBalance(db, orgId); // idempotent no-op
+    return { applied: false, balanceMicros: cur };
+  }
 
-    const updated = await db
-      .insert(balance)
-      .values({ orgId, balanceMicros: input.amountMicros })
-      .onConflictDoUpdate({
-        target: balance.orgId,
-        set: {
-          balanceMicros: sql`${balance.balanceMicros} + ${input.amountMicros}`,
-          updatedAt: sql`now()`,
-        },
-      })
-      .returning({ b: balance.balanceMicros });
+  const updated = await db
+    .insert(balance)
+    .values({ orgId, balanceMicros: input.amountMicros })
+    .onConflictDoUpdate({
+      target: balance.orgId,
+      set: {
+        balanceMicros: sql`${balance.balanceMicros} + ${input.amountMicros}`,
+        updatedAt: sql`now()`,
+      },
+    })
+    .returning({ b: balance.balanceMicros });
 
-    return { applied: true, balanceMicros: updated[0]!.b };
-  });
+  return { applied: true, balanceMicros: updated[0]!.b };
+}
+
+export async function appendLedger(orgId: string, input: AppendInput): Promise<AppendResult> {
+  return withOrg(orgId, (db) => appendLedgerTx(db, orgId, input));
 }
 
 async function currentBalance(
