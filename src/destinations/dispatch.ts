@@ -9,24 +9,31 @@
  * also logged so a 100%-failing destination is observable without inspecting Redis.
  */
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { Redis } from "@upstash/redis";
 import { withOrg } from "../db/client";
 import { route as routeTbl, destination, organization } from "../db/schema";
 import { getKekProvider } from "../crypto/kek";
-import { decryptTenantSecret } from "../crypto/tenantSecrets";
+import { decryptTenantSecret, encryptTenantSecret } from "../crypto/tenantSecrets";
 import { Secret } from "../crypto/secret";
 import { buildLLMPageviewEvents, sendToPostHog, type AiEvent } from "./posthog";
+import { refreshAccessToken } from "./google/oauth";
+import { appendRows, eventsToRows } from "./google/sheets";
 
-interface PhConfig {
+type DestKind = "posthog" | "google_sheets";
+
+interface DestConfig {
   host?: string;
   siteUrl?: string;
+  spreadsheetId?: string;
+  sheetName?: string;
 }
 
 interface ResolvedDest {
   destId: string;
+  kind: DestKind;
   rowOrgId: string; // the destination row's OWN org_id (independent of the request org)
-  config: PhConfig;
+  config: DestConfig;
   ciphertext: Buffer | null;
   secretType: string | null;
 }
@@ -44,9 +51,80 @@ const KEY_TTL_MS = 30_000;
 const destCache = new Map<string, { value: ResolvedOrg | null; expires: number }>();
 // Keyed on (destId, ciphertext-hash) so a rotated credential busts the entry.
 const keyCache = new Map<string, { secret: Secret<string>; expires: number }>();
+// Short-lived Google access tokens, keyed by (destId, ciphertext-hash) so a
+// rotated/replaced refresh token busts the entry like keyCache.
+const ACCESS_TTL_MS = 50 * 60 * 1000;
+const accessCache = new Map<string, { secret: Secret<string>; expires: number }>();
+// Negative cache: after an invalid_grant/refresh failure, stop hammering Google's
+// (shared, platform-level) token endpoint per batch for a short window.
+const ACCESS_NEG_TTL_MS = 60_000;
+const accessNegCache = new Map<string, number>(); // destId -> retry-after ms
 
-function sweepKeyCache(now: number): void {
+function sweepCaches(now: number): void {
   for (const [k, v] of keyCache) if (v.expires <= now) keyCache.delete(k);
+  for (const [k, v] of accessCache) if (v.expires <= now) accessCache.delete(k);
+  for (const [k, v] of accessNegCache) if (v <= now) accessNegCache.delete(k);
+}
+
+/**
+ * Persist a refresh token Google ROTATED on us, so the destination doesn't break
+ * permanently the next time the old token is invalidated. Re-encrypts under the
+ * row's own org and updates the destination row, then busts caches.
+ */
+async function persistRotatedRefresh(
+  orgId: string,
+  org: ResolvedOrg,
+  d: ResolvedDest,
+  newRefresh: Secret<string>,
+): Promise<void> {
+  const ct = await encryptTenantSecret(
+    getKekProvider(),
+    { keyId: org.kekKeyId, ciphertext: org.wrappedDek },
+    { tenantId: d.rowOrgId, secretType: d.secretType ?? "google_refresh_token", recordId: d.destId },
+    newRefresh,
+  );
+  await withOrg(orgId, (db) =>
+    db
+      .update(destination)
+      .set({ secretCiphertext: ct, lastRotatedAt: new Date() })
+      .where(eq(destination.id, d.destId)),
+  );
+  invalidateDestinationCaches(orgId); // next read picks up the new ciphertext
+}
+
+/** Mint/cache a Google access token from a stored refresh token. */
+async function getAccessToken(
+  orgId: string,
+  org: ResolvedOrg,
+  d: ResolvedDest,
+  cipherHash: string,
+  refresh: Secret<string>,
+): Promise<Secret<string>> {
+  const now = Date.now();
+  const neg = accessNegCache.get(d.destId);
+  if (neg && neg > now) throw new Error("google refresh recently failed; backing off");
+  const cacheKey = `${d.destId}:${cipherHash}`;
+  const hit = accessCache.get(cacheKey);
+  if (hit && hit.expires > now) return hit.secret;
+
+  let t;
+  try {
+    t = await refreshAccessToken(refresh);
+  } catch (e) {
+    accessNegCache.set(d.destId, now + ACCESS_NEG_TTL_MS);
+    throw e;
+  }
+  if (t.refreshToken) {
+    // Best-effort: a failed persist must not block forwarding this batch.
+    try {
+      await persistRotatedRefresh(orgId, org, d, t.refreshToken);
+    } catch (e) {
+      console.error("persist rotated refresh failed", { destId: d.destId, err: (e as Error).message });
+    }
+  }
+  const ttl = Math.min(ACCESS_TTL_MS, Math.max(0, (t.expiresInSec - 60) * 1000));
+  accessCache.set(cacheKey, { secret: t.accessToken, expires: now + ttl });
+  return t.accessToken;
 }
 
 async function resolveDestinations(orgId: string, sourceId: string): Promise<ResolvedOrg | null> {
@@ -59,6 +137,7 @@ async function resolveDestinations(orgId: string, sourceId: string): Promise<Res
     const rows = await db
       .select({
         destId: destination.id,
+        kind: destination.kind,
         rowOrgId: destination.orgId,
         config: destination.config,
         ciphertext: destination.secretCiphertext,
@@ -71,7 +150,7 @@ async function resolveDestinations(orgId: string, sourceId: string): Promise<Res
           eq(routeTbl.orgId, orgId),
           eq(routeTbl.sourceId, sourceId), // only destinations wired to THIS source
           eq(routeTbl.enabled, true),
-          eq(destination.kind, "posthog"),
+          inArray(destination.kind, ["posthog", "google_sheets"]),
           eq(destination.status, "active"),
         ),
       );
@@ -84,8 +163,9 @@ async function resolveDestinations(orgId: string, sourceId: string): Promise<Res
     return {
       dests: rows.map((r) => ({
         destId: r.destId,
+        kind: r.kind as DestKind,
         rowOrgId: String(r.rowOrgId),
-        config: (r.config as PhConfig) ?? {},
+        config: (r.config as DestConfig) ?? {},
         ciphertext: r.ciphertext ?? null,
         secretType: r.secretType ?? null,
       })),
@@ -98,10 +178,18 @@ async function resolveDestinations(orgId: string, sourceId: string): Promise<Res
   return value;
 }
 
-async function decryptKey(orgId: string, org: ResolvedOrg, d: ResolvedDest): Promise<Secret<string>> {
+function cipherHashOf(ciphertext: Buffer): string {
+  return createHash("sha256").update(ciphertext).digest("hex").slice(0, 16);
+}
+
+async function decryptKey(
+  orgId: string,
+  org: ResolvedOrg,
+  d: ResolvedDest,
+  cipherHash: string,
+): Promise<Secret<string>> {
   const now = Date.now();
-  sweepKeyCache(now); // evict expired so idle keys don't linger past TTL
-  const cipherHash = createHash("sha256").update(d.ciphertext!).digest("hex").slice(0, 16);
+  sweepCaches(now); // evict expired so idle secrets don't linger past TTL
   const cacheKey = `${d.destId}:${cipherHash}`; // busts on credential rotation
   const hit = keyCache.get(cacheKey);
   if (hit && hit.expires > now) return hit.secret;
@@ -164,11 +252,22 @@ export async function forwardAiEvents(
 
   for (const d of resolved.dests) {
     if (!d.ciphertext) continue; // credential not configured yet
+    const cipherHash = cipherHashOf(d.ciphertext);
     try {
-      const key = await decryptKey(orgId, resolved, d);
-      const batch = buildLLMPageviewEvents(sourceId, aiEvents, d.config.siteUrl);
-      const res = await sendToPostHog(d.config.host, key.expose(), batch);
-      if (!res.ok) await dlqPush(orgId, d.destId, batch.length, res.status);
+      const cred = await decryptKey(orgId, resolved, d, cipherHash);
+      if (d.kind === "posthog") {
+        const batch = buildLLMPageviewEvents(sourceId, aiEvents, d.config.siteUrl);
+        const res = await sendToPostHog(d.config.host, cred.expose(), batch);
+        if (!res.ok) await dlqPush(orgId, d.destId, batch.length, res.status);
+      } else if (d.kind === "google_sheets") {
+        if (!d.config.spreadsheetId) {
+          // Active sheets dest with no spreadsheetId = misconfig — surface it.
+          await dlqPush(orgId, d.destId, aiEvents.length, -1, "google_sheets missing spreadsheetId");
+          continue;
+        }
+        const access = await getAccessToken(orgId, resolved, d, cipherHash, cred); // cred = refresh token
+        await appendRows(access, d.config.spreadsheetId, d.config.sheetName ?? "Logs", eventsToRows(aiEvents));
+      }
     } catch (e) {
       // method+host+status only — never the credential or body.
       await dlqPush(orgId, d.destId, aiEvents.length, -1, (e as Error).message);
@@ -181,8 +280,10 @@ export function invalidateDestinationCaches(orgId?: string): void {
   if (orgId) {
     for (const k of destCache.keys()) if (k.startsWith(`${orgId}:`)) destCache.delete(k);
     keyCache.clear(); // keyed by destId:hash, not org — clear all (rotation is rare)
+    accessCache.clear();
   } else {
     destCache.clear();
     keyCache.clear();
+    accessCache.clear();
   }
 }

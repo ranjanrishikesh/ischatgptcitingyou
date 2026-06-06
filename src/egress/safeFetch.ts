@@ -32,7 +32,10 @@ export interface SafeFetchInit {
 export interface SafeFetchResult {
   status: number;
   ok: boolean;
+  body: string;
 }
+
+const MAX_RESPONSE_BYTES = 1024 * 1024; // 1 MiB — our destinations return small JSON
 
 export async function safeFetch(rawUrl: string, init: SafeFetchInit = {}): Promise<SafeFetchResult> {
   let u: URL;
@@ -94,13 +97,36 @@ export async function safeFetch(rawUrl: string, init: SafeFetchInit = {}): Promi
       dispatcher: agent,
       signal: controller.signal,
     });
-    // We never read the body — cancel it so a slow/large response can't make the
-    // socket (and agent.close) hang past the timeout.
-    await res.body?.cancel().catch(() => {});
     if (res.status >= 300 && res.status < 400) {
+      await res.body?.cancel().catch(() => {});
       throw new SsrfError(`redirect not allowed (status ${res.status})`);
     }
-    return { status: res.status, ok: res.status >= 200 && res.status < 300 };
+    const clen = res.headers.get("content-length");
+    if (clen && Number(clen) > MAX_RESPONSE_BYTES) {
+      await res.body?.cancel().catch(() => {});
+      throw new SsrfError("response too large");
+    }
+    // Enforce the cap WHILE streaming — a chunked/no-Content-Length response must
+    // not be buffered unbounded (res.text() would OOM on a hostile body). Timer is
+    // still armed, so a slow body also aborts.
+    const reader = res.body?.getReader();
+    if (!reader) return { status: res.status, ok: res.status >= 200 && res.status < 300, body: "" };
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        total += value.byteLength;
+        if (total > MAX_RESPONSE_BYTES) {
+          await reader.cancel().catch(() => {});
+          throw new SsrfError("response too large");
+        }
+        chunks.push(Buffer.from(value));
+      }
+    }
+    const body = Buffer.concat(chunks).toString("utf8");
+    return { status: res.status, ok: res.status >= 200 && res.status < 300, body };
   } finally {
     clearTimeout(timer);
     await agent.destroy().catch(() => {});
