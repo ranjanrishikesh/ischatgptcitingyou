@@ -11,8 +11,8 @@
  * Self-host mode only WARNS (e.g. about file-KEK being a weaker guarantee).
  */
 import postgres from "postgres";
-import { deployMode } from "./deployMode.js";
-import { TENANT_TABLES } from "../db/schema.js";
+import { deployMode } from "./deployMode";
+import { TENANT_TABLES } from "../db/schema";
 
 export class PostureError extends Error {}
 

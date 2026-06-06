@@ -13,15 +13,15 @@
  * A single confused `org_id` variable is therefore not enough to cross tenants —
  * the attacker would have to corrupt two independently-sourced values.
  */
-import { Secret } from "./secret.js";
+import { Secret } from "./secret";
 import {
   aeadEncrypt,
   aeadDecrypt,
   generateDek,
   zeroize,
   type EncryptionContext,
-} from "./envelope.js";
-import type { KekProvider, WrappedDek } from "./kek.js";
+} from "./envelope";
+import type { KekProvider, WrappedDek } from "./kek";
 
 const DEK_PURPOSE = "tenant-dek";
 

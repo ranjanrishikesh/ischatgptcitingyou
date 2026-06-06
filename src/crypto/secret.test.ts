@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Secret, isSecret, redactForLog } from "./secret.js";
+import { Secret, isSecret, redactForLog } from "./secret";
 
 describe("Secret", () => {
   it("never leaks via toString / template / JSON / inspect", () => {

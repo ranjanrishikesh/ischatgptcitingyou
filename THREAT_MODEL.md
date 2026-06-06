@@ -44,6 +44,14 @@ internet → ingest endpoint · browser → control plane · worker → destinat
 - **No auto-recharge cap** (a product decision). A bot storm could run up charges; we mitigate
   with per-charge email + spike alerts, not a hard ceiling. Documented so it's a choice, not a
   surprise.
+- **Bearer revocation latency**: the drain resolves a source from a short (≤5s) in-process
+  cache holding its bearer hash + status, so a rotated/revoked bearer keeps authenticating for
+  up to that window per warm instance. Bounded + documented. When rotation/revocation ships
+  (M4) it must also publish a cross-process invalidation (per-process cache delete is not enough
+  for a multi-instance hosted deploy).
+- **Ingest IP trust**: the pre-auth rate limiter keys on the platform-trusted client IP
+  (`x-real-ip` / right-most XFF hop), never the spoofable left-most XFF. Self-host operators
+  behind a different proxy topology must ensure the same trusted-hop assumption.
 - **Self-host supply chain**: "no phone-home" stops *us*, not a poisoned dependency. The
   deployable app ships a default-deny egress policy + pinned lockfile + SBOM (M-later), but a
   self-hoster running untrusted deps is outside our control.
@@ -53,7 +61,7 @@ internet → ingest endpoint · browser → control plane · worker → destinat
 | | Threat | Primary control |
 |---|---|---|
 | S | spoofed ingest batch | per-source bearer (constant-time) + self-validating MAC'd ingestId |
-| T | tampered payload | AEAD auth tag; content-hash replay key |
+| T | tampered payload / replay | AEAD auth tag; per-batch content-hash idempotency gate on the drain (Redis SETNX, dedups Vercel at-least-once redelivery so a batch is metered once) |
 | R | repudiated charge | append-only ledger + Stripe idempotency |
 | I | cross-tenant disclosure | FORCE RLS + per-tenant DEK + AAD (two-failure) |
 | D | recharge/DoS amplification | edge IP limiter before I/O; O(1) forged-id rejection |

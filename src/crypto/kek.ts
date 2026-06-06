@@ -12,7 +12,7 @@
  * The provider is chosen at boot from KEK_PROVIDER. Hosted mode rejects "file".
  */
 import { readFileSync } from "node:fs";
-import { aeadEncrypt, aeadDecrypt, type EncryptionContext } from "./envelope.js";
+import { aeadEncrypt, aeadDecrypt, type EncryptionContext } from "./envelope";
 
 export interface WrappedDek {
   /** Identifies which KEK wrapped this DEK (for rotation + audit). */

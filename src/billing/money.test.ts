@@ -11,7 +11,7 @@ import {
   AUTO_RECHARGE_THRESHOLD_MICROS,
   AUTO_RECHARGE_TARGET_MICROS,
   MICRO_PER_EVENT,
-} from "./money.js";
+} from "./money";
 
 describe("money", () => {
   it("dollars -> micro-dollars", () => {

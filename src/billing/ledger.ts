@@ -10,9 +10,9 @@
  * against it.
  */
 import { sql } from "drizzle-orm";
-import { withOrg } from "../db/client.js";
-import { ledgerEntry, balance } from "../db/schema.js";
-import { FREE_GRANT_MICROS } from "./money.js";
+import { withOrg } from "../db/client";
+import { ledgerEntry, balance } from "../db/schema";
+import { FREE_GRANT_MICROS } from "./money";
 
 export type LedgerKind =
   | "free_grant"

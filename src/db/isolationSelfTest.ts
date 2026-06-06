@@ -42,6 +42,10 @@ async function main() {
           insert into organization (id, name, wrapped_dek, kek_key_id)
           values (${org}, ${tag + "-" + suffix}, ${Buffer.from("x")}, 'selftest')`;
         await tx`insert into project (org_id, name) values (${org}, ${tag + "-p" + suffix})`;
+        await tx`
+          insert into source (org_id, project_id, ingest_id_public, bearer_hash)
+          values (${org}, (select id from project where org_id = ${org} and name = ${tag + "-p" + suffix}),
+                  ${tag + "-ingest-" + suffix}, ${"hash-" + suffix})`;
       });
     }
 
@@ -78,8 +82,28 @@ async function main() {
       }
     });
 
+    // (4) ingest_resolve (SECURITY DEFINER) MUST return exactly the one matching
+    // source row WITHOUT an org GUC — proving the resolver-read policy lets the
+    // definer read source under FORCE RLS. A regression here = drain auth dead.
+    await sql.begin(async (tx) => {
+      const rows = await tx`select org_id, status from ingest_resolve(${tag + "-ingest-A"})`;
+      if (rows.length !== 1 || rows[0]!.org_id !== orgA) {
+        throw new IsolationError(
+          `ingest_resolve returned ${rows.length} rows for A's id (expected 1, org A). ` +
+            `FORCE RLS likely binds the definer with no resolver-read policy -> drain auth dead.`,
+        );
+      }
+      // And it must NOT leak across ids: B's id returns B, never A.
+      const rb = await tx`select org_id from ingest_resolve(${tag + "-ingest-B"})`;
+      if (rb.length !== 1 || rb[0]!.org_id !== orgB) {
+        throw new IsolationError(`ingest_resolve cross-id mismatch for B`);
+      }
+    });
+
     // eslint-disable-next-line no-console
-    console.log("✅ isolation self-test passed (A/B isolated, missing-GUC fails closed via NULL)");
+    console.log(
+      "✅ isolation self-test passed (A/B isolated, missing-GUC fails closed, ingest_resolve works + id-scoped)",
+    );
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error("❌ ISOLATION SELF-TEST FAILED:", e instanceof Error ? e.message : e);

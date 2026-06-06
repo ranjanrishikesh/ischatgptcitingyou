@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { randomBytes } from "node:crypto";
-import { aeadEncrypt, aeadDecrypt, generateDek, constantTimeEqual } from "./envelope.js";
-import { FileKekProvider } from "./kek.js";
+import { aeadEncrypt, aeadDecrypt, generateDek, constantTimeEqual } from "./envelope";
+import { FileKekProvider } from "./kek";
 import {
   provisionTenantDek,
   encryptTenantSecret,
   decryptTenantSecret,
-} from "./tenantSecrets.js";
-import { Secret } from "./secret.js";
+} from "./tenantSecrets";
+import { Secret } from "./secret";
 
 describe("envelope AEAD", () => {
   it("round-trips with matching AAD", () => {

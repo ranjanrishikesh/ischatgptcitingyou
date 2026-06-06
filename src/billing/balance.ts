@@ -16,7 +16,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { Redis } from "@upstash/redis";
-import { eventCostMicrosNumber } from "./money.js";
+import { eventCostMicrosNumber } from "./money";
 
 let _redis: Redis | null = null;
 
@@ -92,6 +92,35 @@ export async function debitEvents(orgId: string, events: number): Promise<DebitR
 
 export async function getHotBalance(orgId: string): Promise<number> {
   return Number((await redis().get<number>(balKey(orgId))) ?? 0);
+}
+
+/**
+ * Replay/idempotency gate for a drain batch. Vercel log drains are at-least-once
+ * (retried on non-2xx / timeout, can redeliver), so the SAME batch can arrive
+ * twice and must be debited only ONCE. Returns true if this token is NEW (debit
+ * it), false if already seen (a replay — skip the debit). TTL covers the
+ * redelivery window. Token should be a content hash of the raw batch body.
+ */
+export async function markBatchSeen(
+  orgId: string,
+  token: string,
+  ttlSeconds: number,
+): Promise<boolean> {
+  const ok = await redis().set(`seen:{${orgId}}:${token}`, "1", { nx: true, ex: ttlSeconds });
+  return ok === "OK";
+}
+
+/**
+ * Record events that could NOT be metered (Redis down, seed/retry exhausted), so
+ * silent free usage is visible/alertable instead of vanishing into a log line.
+ * Best-effort: never throws.
+ */
+export async function incrUnmetered(orgId: string, events: number): Promise<void> {
+  try {
+    await redis().incrby(`unmetered:{${orgId}}`, events);
+  } catch {
+    /* best-effort visibility only */
+  }
 }
 
 /**
