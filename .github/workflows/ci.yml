@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  secret-scan:
+    # Backstop: no real-looking credentials may land in the tree. The Secret
+    # wrapper + redactForLog stop runtime leaks; this stops at-rest leaks.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: grep for credential-shaped strings
+        run: |
+          set -e
+          # Allow prefixes inside tests/docs/examples; fail only on src code.
+          if grep -RInE '(phc_[A-Za-z0-9]{20,}|sk_live_[A-Za-z0-9]{20,}|ya29\.[A-Za-z0-9_-]{20,}|ist_live_[A-Za-z0-9]{20,})' \
+               --include='*.ts' --include='*.tsx' src/ \
+               | grep -vE '(\.test\.ts|example|REDACTED|phc_abc123|phc_supersecret)'; then
+            echo "::error::credential-shaped string found in src/"; exit 1
+          fi
+          echo "no credential-shaped strings in src/"
+
+  isolation:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: icy
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # Owner role runs migrations + RLS; runtime role (non-owner) runs the app.
+      DATABASE_OWNER_URL: postgres://postgres:postgres@localhost:5432/icy
+      RUNTIME_DB_ROLE: app_runtime
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - name: create non-owner runtime role
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d icy -c \
+            "CREATE ROLE app_runtime LOGIN PASSWORD 'runtime'; GRANT CONNECT ON DATABASE icy TO app_runtime; GRANT USAGE ON SCHEMA public TO app_runtime;"
+      - run: npm run db:generate && npm run db:migrate
+        env: { DATABASE_URL: postgres://postgres:postgres@localhost:5432/icy }
+      - run: npm run db:rls
+      - name: isolation self-test (must fail closed)
+        run: npm run isolation:selftest
+        env:
+          DATABASE_URL: postgres://app_runtime:runtime@localhost:5432/icy
