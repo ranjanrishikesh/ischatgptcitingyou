@@ -135,8 +135,8 @@ async function main() {
     await sql.unsafe(`REVOKE ALL ON FUNCTION user_memberships(text) FROM PUBLIC;`);
     if (runtimeRole) {
       await sql.unsafe(`GRANT EXECUTE ON FUNCTION user_memberships(text) TO "${runtimeRole}";`);
-      // Auth tables are not tenant-scoped — grant the runtime role plain DML.
-      for (const t of ["user", "session", "account", "verification"]) {
+      // Non-tenant tables (auth + Stripe event idempotency) — grant plain DML.
+      for (const t of ["user", "session", "account", "verification", "processed_stripe_event"]) {
         await sql.unsafe(`GRANT SELECT, INSERT, UPDATE, DELETE ON "${t}" TO "${runtimeRole}";`);
       }
     }

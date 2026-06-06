@@ -52,6 +52,28 @@ export async function rateLimitIp(ip: string): Promise<RateLimitResult> {
 }
 
 /**
+ * Generic fixed-window limiter for an arbitrary key (e.g. per-org billing).
+ * Returns true if allowed. No-op (allow) when Redis is unconfigured or errors.
+ */
+export async function rateLimitAction(
+  key: string,
+  max: number,
+  windowSeconds: number,
+): Promise<boolean> {
+  const r = redis();
+  if (!r) return true;
+  try {
+    const bucket = Math.floor(Date.now() / 1000 / windowSeconds);
+    const k = `rl:${key}:${bucket}`;
+    const count = await r.incr(k);
+    if (count === 1) await r.expire(k, windowSeconds * 2);
+    return count <= max;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Trusted client IP. The left-most X-Forwarded-For entry is CLIENT-SUPPLIED and
  * spoofable (an attacker rotates it to get a fresh bucket per request), so we
  * never key on it. On Vercel the platform sets `x-real-ip` to the true peer and
