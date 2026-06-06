@@ -280,6 +280,42 @@ export const autoRechargeConfig = pgTable("auto_recharge_config", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Append-only, hash-chained audit log. Stores identifiers + action types only —
+// NEVER secret values (meta is redacted before append). Each row chains to the
+// previous via hash = sha256(prevHash || canonical(entry)), so tampering with or
+// deleting any row breaks the chain (verifyAuditChain).
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    seq: bigint("seq", { mode: "bigint" }).notNull(),
+    actorId: text("actor_id"),
+    action: text("action").notNull(),
+    targetType: text("target_type"),
+    targetId: text("target_id"),
+    meta: jsonb("meta").notNull().default({}),
+    prevHash: text("prev_hash"),
+    hash: text("hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqSeq: unique("audit_org_seq").on(t.orgId, t.seq),
+    byOrg: index("audit_org_idx").on(t.orgId),
+  }),
+);
+
+// Forensic record of crypto-shredding org deletions. Deliberately NOT tenant-
+// scoped and with NO FK to organization, so it SURVIVES the cascade it records.
+export const orgDeletionLog = pgTable("org_deletion_log", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id").notNull(),
+  actorId: text("actor_id"),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // Stripe webhook idempotency — every event processed at most once.
 export const processedStripeEvent = pgTable("processed_stripe_event", {
   eventId: text("event_id").primaryKey(),
@@ -298,4 +334,5 @@ export const TENANT_TABLES = [
   "balance",
   "stripe_customer",
   "auto_recharge_config",
+  "audit_log",
 ] as const;

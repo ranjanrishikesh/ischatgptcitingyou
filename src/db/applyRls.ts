@@ -48,13 +48,11 @@ async function main() {
       await sql.unsafe(`DROP POLICY IF EXISTS tenant_select ON "${table}";`);
       await sql.unsafe(`DROP POLICY IF EXISTS tenant_insert ON "${table}";`);
 
-      if (table === "ledger_entry") {
+      if (table === "ledger_entry" || table === "audit_log") {
         // Append-only: read + insert within your org; no update/delete policy.
+        await sql.unsafe(`CREATE POLICY tenant_select ON "${table}" FOR SELECT USING (${col} = ${GUC});`);
         await sql.unsafe(
-          `CREATE POLICY tenant_select ON "ledger_entry" FOR SELECT USING (${col} = ${GUC});`,
-        );
-        await sql.unsafe(
-          `CREATE POLICY tenant_insert ON "ledger_entry" FOR INSERT WITH CHECK (${col} = ${GUC});`,
+          `CREATE POLICY tenant_insert ON "${table}" FOR INSERT WITH CHECK (${col} = ${GUC});`,
         );
       } else if (table === "organization") {
         // Creating a new boundary is unrestricted; everything else is scoped.
@@ -74,8 +72,10 @@ async function main() {
       }
 
       if (runtimeRole) {
-        const dml =
-          table === "ledger_entry" ? "SELECT, INSERT" : "SELECT, INSERT, UPDATE, DELETE";
+        // Append-only tables deny the privilege outright (belt), not just via the
+        // absence of an UPDATE/DELETE policy (suspenders).
+        const appendOnly = table === "ledger_entry" || table === "audit_log";
+        const dml = appendOnly ? "SELECT, INSERT" : "SELECT, INSERT, UPDATE, DELETE";
         await sql.unsafe(`GRANT ${dml} ON "${table}" TO "${runtimeRole}";`);
       }
       // eslint-disable-next-line no-console
@@ -135,10 +135,13 @@ async function main() {
     await sql.unsafe(`REVOKE ALL ON FUNCTION user_memberships(text) FROM PUBLIC;`);
     if (runtimeRole) {
       await sql.unsafe(`GRANT EXECUTE ON FUNCTION user_memberships(text) TO "${runtimeRole}";`);
-      // Non-tenant tables (auth + Stripe event idempotency) — grant plain DML.
+      // Non-tenant tables (auth + Stripe idempotency + org-deletion forensics).
+      // org_deletion_log deliberately has NO FK to organization, so it survives a
+      // crypto-shred; grant insert/select only (forensic record is append-only).
       for (const t of ["user", "session", "account", "verification", "processed_stripe_event"]) {
         await sql.unsafe(`GRANT SELECT, INSERT, UPDATE, DELETE ON "${t}" TO "${runtimeRole}";`);
       }
+      await sql.unsafe(`GRANT SELECT, INSERT ON "org_deletion_log" TO "${runtimeRole}";`);
     }
     // eslint-disable-next-line no-console
     console.log("user_memberships() created; auth-table grants applied");

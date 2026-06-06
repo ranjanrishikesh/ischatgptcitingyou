@@ -2,6 +2,7 @@
 import { authorizeOrgAdmin, errorResponse, parseMicros } from "@/services/apiAuth";
 import { setAutoRechargeConfig } from "@/billing/autoRecharge";
 import { rateLimitAction } from "@/ingest/ratelimit";
+import { auditSafe } from "@/services/audit";
 
 export const runtime = "nodejs";
 
@@ -13,7 +14,7 @@ export async function POST(req: Request): Promise<Response> {
       thresholdMicros?: string;
       targetMicros?: string;
     };
-    const { orgId } = await authorizeOrgAdmin(body.orgId);
+    const { orgId, userId } = await authorizeOrgAdmin(body.orgId);
     if (!(await rateLimitAction(`billing:${orgId}`, 10, 60))) {
       return new Response("rate limited", { status: 429 });
     }
@@ -21,6 +22,11 @@ export async function POST(req: Request): Promise<Response> {
       enabled: !!body.enabled,
       thresholdMicros: body.thresholdMicros ? parseMicros(body.thresholdMicros) : undefined,
       targetMicros: body.targetMicros ? parseMicros(body.targetMicros) : undefined,
+    });
+    await auditSafe(orgId, {
+      actorId: userId,
+      action: "billing.auto_recharge.set",
+      meta: { enabled: !!body.enabled },
     });
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,

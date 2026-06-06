@@ -100,9 +100,69 @@ async function main() {
       }
     });
 
+    // (5) destination isolation: create a destination per org; B cannot see A's.
+    const destA = randomUUID();
+    const destB = randomUUID();
+    for (const [org, id, suffix] of [
+      [orgA, destA, "A"],
+      [orgB, destB, "B"],
+    ] as const) {
+      await sql.begin(async (tx) => {
+        await tx`select set_config('app.current_org', ${org}, true)`;
+        await tx`insert into destination (id, org_id, kind, label, status)
+                 values (${id}, ${org}, 'posthog', ${tag + "-d" + suffix}, 'active')`;
+      });
+    }
+    await sql.begin(async (tx) => {
+      await tx`select set_config('app.current_org', ${orgB}, true)`;
+      const rows = await tx`select id from destination where id = ${destA}`;
+      if (rows.length !== 0) throw new IsolationError("org B can see org A's destination");
+    });
+
+    // (6) route triple-equality trigger: org A wiring its source to org B's
+    // destination must be REJECTED (the destination is invisible/NULL under A's
+    // RLS, so the trigger raises).
+    const srcRows = await sql.begin(async (tx) => {
+      await tx`select set_config('app.current_org', ${orgA}, true)`;
+      return tx`select id from source where org_id = ${orgA} limit 1`;
+    });
+    const srcA = srcRows[0]!.id as string;
+    let rejected = false;
+    try {
+      await sql.begin(async (tx) => {
+        await tx`select set_config('app.current_org', ${orgA}, true)`;
+        await tx`insert into route (org_id, source_id, destination_id)
+                 values (${orgA}, ${srcA}, ${destB})`;
+      });
+    } catch (e) {
+      // Must be the TRIGGER, not an unrelated error (grant loss, FK, etc.).
+      if (!(e instanceof Error) || !/route org mismatch/i.test(e.message)) throw e;
+      rejected = true;
+    }
+    if (!rejected) {
+      throw new IsolationError("cross-org route insert was NOT rejected by the trigger");
+    }
+
+    // (6b) Positive control: a SAME-org route MUST insert (trigger doesn't reject all).
+    await sql.begin(async (tx) => {
+      await tx`select set_config('app.current_org', ${orgA}, true)`;
+      await tx`insert into route (org_id, source_id, destination_id)
+               values (${orgA}, ${srcA}, ${destA})`;
+    });
+
+    // (7) Append-only: UPDATE on ledger_entry must affect ZERO rows (RLS denies).
+    await sql.begin(async (tx) => {
+      await tx`select set_config('app.current_org', ${orgA}, true)`;
+      await tx`insert into ledger_entry (org_id, kind, amount_micros) values (${orgA}, 'adjustment', 0)`;
+      const upd = await tx`update ledger_entry set amount_micros = 1 where org_id = ${orgA}`;
+      if (upd.count !== 0) {
+        throw new IsolationError(`ledger_entry not append-only: UPDATE affected ${upd.count} rows`);
+      }
+    });
+
     // eslint-disable-next-line no-console
     console.log(
-      "✅ isolation self-test passed (A/B isolated, missing-GUC fails closed, ingest_resolve works + id-scoped)",
+      "✅ isolation self-test passed (A/B isolated, missing-GUC fails closed, ingest_resolve id-scoped, destination isolated, cross-org route rejected via trigger, same-org route ok, ledger append-only)",
     );
   } catch (e) {
     // eslint-disable-next-line no-console

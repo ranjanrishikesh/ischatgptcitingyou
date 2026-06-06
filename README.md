@@ -75,9 +75,12 @@ npm run isolation:selftest                  # prove fail-closed isolation
 | Milestone | What | State |
 |-----------|------|-------|
 | M0 | Crypto + isolation + billing spine | **done** |
-| M1 | Secure ingest endpoint | next |
-| M2 | PostHog destination | |
-| M3 | Google Sheets (OAuth) | |
-| M4 | Sign-in + self-host config UI | |
-| M5 | Hosted custody machinery | gated |
-| M6 | Hosted GA (audit, pentest) | gated |
+| M1 | Secure ingest endpoint | **done** |
+| M2 | PostHog destination + SSRF-safe egress | **done** |
+| M3 | Google Sheets (OAuth) | **done** |
+| M4 | Sign-in + org provisioning + config UI | **done** |
+| M5 | Hosted custody — Stripe + reconcile cron | **done** |
+| M6 | Hosted GA — audit log, crypto-shred, cross-tenant CI, `/trust` | **done** (3rd-party pentest still required before taking real keys) |
+
+Self-host is usable after M4. Hosted may take real customer credentials only after an
+independent penetration test of the custody path passes — the remaining M6 gate.

@@ -38,4 +38,18 @@ describe("Secret", () => {
     expect(out.wrapped).toBe("[REDACTED]");
     expect(out.keep).toBe(42);
   });
+
+  it("redacts raw secret-shaped strings even under benign keys / bare", () => {
+    const out = redactForLog({
+      note: "sk_live_abcdefghijklmnop",
+      id: "ist_live_AAAAAAAAAAAAAAAA",
+      jwt: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36",
+      plain: "just a normal note",
+    }) as Record<string, unknown>;
+    expect(out.note).toBe("[REDACTED]");
+    expect(out.id).toBe("[REDACTED]");
+    expect(out.jwt).toBe("[REDACTED]");
+    expect(out.plain).toBe("just a normal note");
+    expect(redactForLog("phc_aaaaaaaaaaaaaaaaaaaa")).toBe("[REDACTED]");
+  });
 });

@@ -196,6 +196,22 @@ export async function clearRechargePending(orgId: string): Promise<void> {
   await redis().del(rechargePendingKey(orgId));
 }
 
+/** Purge all hot-meter/billing Redis keys for a deleted org (best-effort). */
+export async function purgeOrgKeys(orgId: string): Promise<void> {
+  try {
+    await redis().del(
+      balKey(orgId),
+      usedKey(orgId),
+      pendingKey(orgId),
+      seqKey(orgId),
+      rechargePendingKey(orgId),
+    );
+    await redis().srem(RECON_SET, orgId);
+  } catch {
+    /* best-effort */
+  }
+}
+
 /** Count auto-recharges this hour for an org (spike detection). */
 export async function bumpRechargeCount(orgId: string): Promise<number> {
   const hour = Math.floor(Date.now() / 3_600_000);

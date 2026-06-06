@@ -19,6 +19,12 @@ export async function POST(req: Request): Promise<Response> {
   try {
     await handleStripeEvent(event);
   } catch (e) {
+    // Org deleted mid-flight: the ledger FK (org_id -> organization) fails forever.
+    // Ack so Stripe stops retrying; the deletion is already recorded forensically.
+    if ((e as { code?: string }).code === "23503") {
+      console.error("webhook: org gone, acking", { type: event.type });
+      return new Response("ok", { status: 200 });
+    }
     console.error("webhook handler failed", { type: event.type, err: (e as Error).message });
     return new Response("handler error", { status: 500 }); // Stripe will retry
   }

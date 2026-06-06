@@ -31,6 +31,17 @@ internet → ingest endpoint · browser → control plane · worker → destinat
 - **No-leak logging**: `Secret<T>` + `redactForLog` + CI secret-scan of src and (planned)
   build logs. Outbound error paths capture method+host+status only — never headers/body.
 - **Append-only money ledger**, idempotent credits, single-flight recharge.
+- **Tamper-evident audit**: sensitive actions append to a hash-chained, append-only
+  `audit_log` (identifiers + action types only, never secret values); `verifyAuditChain`
+  detects any edit/deletion.
+- **Crypto-shredding erasure**: deleting an org destroys its wrapped per-tenant DEK, making
+  every stored ciphertext — including database backups/WAL — permanently undecryptable. The
+  only erasure that reaches immutable backups.
+- **Cross-tenant CI gate**: the isolation self-test proves A/B isolation, missing-GUC fails
+  closed, `ingest_resolve` is id-scoped, destinations are isolated, and a cross-org route is
+  rejected by the DB trigger — run against a real Postgres in CI.
+- **Remaining GA gate**: hosted must pass an independent third-party penetration test of the
+  custody path before holding any real customer credential. (External; not code.)
 
 ## Honest limits
 

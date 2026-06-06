@@ -9,6 +9,7 @@ import { verifyOAuthState, OAUTH_COOKIE } from "@/auth/oauthState";
 import { exchangeCode } from "@/destinations/google/oauth";
 import { createSpreadsheet } from "@/destinations/google/sheets";
 import { createGoogleSheetsDestination } from "@/services/destinations";
+import { auditSafe } from "@/services/audit";
 
 export const runtime = "nodejs";
 
@@ -52,11 +53,17 @@ export async function GET(req: Request): Promise<Response> {
       tokens.accessToken,
       "ischatgptcitingyou — AI crawler logs",
     );
-    await createGoogleSheetsDestination(saved.orgId, {
+    const { destId } = await createGoogleSheetsDestination(saved.orgId, {
       label: saved.label,
       refreshToken: tokens.refreshToken,
       spreadsheetId,
       sheetName: saved.sheetName,
+    });
+    await auditSafe(saved.orgId, {
+      action: "destination.create",
+      targetType: "destination",
+      targetId: destId,
+      meta: { kind: "google_sheets" },
     });
     return back("/dashboard?connected=google_sheets");
   } catch {

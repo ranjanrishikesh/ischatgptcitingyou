@@ -55,9 +55,20 @@ export function isSecret(v: unknown): v is Secret<unknown> {
 const SENSITIVE_KEY_RE =
   /(secret|token|password|passwd|api[_-]?key|authorization|bearer|credential|private[_-]?key|refresh[_-]?token|client[_-]?secret|webhook)/i;
 
+// Value-level backstop: high-confidence secret SHAPES, so a raw credential placed
+// under a benign key (or a bare string) is still redacted. Over-redaction is the
+// safe failure for an audit log; baking a credential into an immutable chain is not.
+const SENSITIVE_VALUE_RE =
+  /(sk_(live|test)_[A-Za-z0-9]{8,}|phc_[A-Za-z0-9]{16,}|ya29\.[A-Za-z0-9_-]{12,}|\bBearer\s+\S{8,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|i(?:st|nd)_live_[A-Za-z0-9]{8,}|1\/[A-Za-z0-9_-]{20,})/;
+
+function redactString(s: string): string {
+  return SENSITIVE_VALUE_RE.test(s) ? REDACTED : s;
+}
+
 export function redactForLog(input: unknown, depth = 0): unknown {
   if (depth > 6) return "[truncated]";
   if (isSecret(input)) return REDACTED;
+  if (typeof input === "string") return redactString(input);
   if (input === null || typeof input !== "object") return input;
   if (Array.isArray(input)) return input.map((v) => redactForLog(v, depth + 1));
   const out: Record<string, unknown> = {};
