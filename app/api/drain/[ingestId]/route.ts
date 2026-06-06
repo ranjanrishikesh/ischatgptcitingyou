@@ -22,8 +22,10 @@ import { rateLimitIp, clientIp } from "@/ingest/ratelimit";
 import { parseNdjson, readBodyCapped } from "@/ingest/parse";
 import { classify } from "@/ingest/classify";
 import { isHosted } from "@/config/deployMode";
-import { debitEvents, seedHotBalance, markBatchSeen, incrUnmetered } from "@/billing/balance";
+import { debitEvents, seedHotBalance, markBatchSeen, deleteBatchSeen, incrUnmetered } from "@/billing/balance";
 import { getBalanceMicros } from "@/billing/ledger";
+import { forwardAiEvents } from "@/destinations/dispatch";
+import type { AiEvent } from "@/destinations/posthog";
 
 export const runtime = "nodejs";
 
@@ -84,24 +86,42 @@ export async function POST(
   if (raw === null) return new Response("payload too large", { status: 413, headers });
   const parsed = parseNdjson(raw);
 
-  // 5. Classify in memory. Count billable (kept) events; bucket for M2 routing.
-  let aiCount = 0;
+  // 5. Classify in memory. Collect AI events for forwarding; count billable.
+  const aiEvents: AiEvent[] = [];
   let otherCount = 0;
   for (const rec of parsed.records) {
     const c = classify(rec);
     if (!c.keep) continue;
-    if (c.bucket === "ai") aiCount++;
-    else otherCount++;
+    if (c.bucket === "ai") {
+      aiEvents.push({
+        pathname: rec.pathname,
+        userAgent: rec.userAgent,
+        llm: c.llm ?? "Unknown AI",
+        timestampMs: rec.timestampMs,
+      });
+    } else {
+      otherCount++;
+    }
   }
-  const billable = aiCount + otherCount;
+  const billable = aiEvents.length + otherCount;
 
-  // 6. Meter (hosted only; best-effort, never blocks ingest in M1).
+  // 6. Meter (hosted only; best-effort, never blocks ingest).
+  //    - `fresh` = this is a first delivery to act on (not a replay/redelivery);
+  //      it gates BOTH the debit and forwarding, so a redelivered batch is
+  //      neither double-charged nor double-forwarded.
+  //    - the claim (markBatchSeen) is RELEASED if metering then fails, so a
+  //      transient error doesn't make a batch permanently free-but-forwarded.
+  //    - `hadFunds` only stops forwarding on a POSITIVE out-of-credits; a
+  //      metering failure (our problem) still forwards.
+  let hadFunds = true;
+  let fresh = true;
   if (isHosted() && billable > 0) {
+    const token = createHash("sha256").update(src.orgId + ":" + raw).digest("hex");
     try {
-      // Replay/redelivery dedup: content hash of the raw batch, scoped per org.
-      const token = createHash("sha256").update(src.orgId + ":" + raw).digest("hex");
-      const fresh = await markBatchSeen(src.orgId, token, REPLAY_TTL_SECONDS);
-      if (fresh) {
+      const claimed = await markBatchSeen(src.orgId, token, REPLAY_TTL_SECONDS);
+      if (!claimed) {
+        fresh = false; // replay / concurrent delivery — already handled
+      } else {
         let d = await debitEvents(src.orgId, billable);
         let tries = 0;
         while (d.needsSeed && tries++ < 3) {
@@ -109,21 +129,40 @@ export async function POST(
           d = await debitEvents(src.orgId, billable);
         }
         if (d.needsSeed) {
+          await deleteBatchSeen(src.orgId, token); // let a redelivery re-meter
           await incrUnmetered(src.orgId, billable);
           console.error("debit unmetered: seed/retry exhausted", { orgId: src.orgId, billable });
+        } else {
+          hadFunds = d.hadFunds;
         }
-        // M2 will use d.hadFunds to gate forwarding. M1 only meters.
       }
-      // else: replay — already metered, skip the debit.
     } catch (e) {
-      // Metering failure must not break the pipeline; record + log metadata only.
+      // Metering threw after claiming: release the claim so a redelivery re-meters.
+      await deleteBatchSeen(src.orgId, token);
       await incrUnmetered(src.orgId, billable);
       console.error("debit failed", { orgId: src.orgId, billable, err: (e as Error).message });
     }
   }
 
-  // 7. Forwarding to the destination is M2. For now, classify-and-drop.
-  console.log("DRAIN ok", { sourceId: src.sourceId, ai: aiCount, other: otherCount, bad: parsed.badLines });
+  // 7. Forward AI events to the org's destinations (both modes). Skipped on a
+  //    replay (already forwarded) or when a hosted org is out of credits. Never
+  //    blocks the 200.
+  const canForward = (!isHosted() || hadFunds) && fresh;
+  if (canForward && aiEvents.length) {
+    try {
+      await forwardAiEvents(src.orgId, src.sourceId, aiEvents);
+    } catch (e) {
+      console.error("forward failed", { orgId: src.orgId, err: (e as Error).message });
+    }
+  }
+
+  console.log("DRAIN ok", {
+    sourceId: src.sourceId,
+    ai: aiEvents.length,
+    other: otherCount,
+    forwarded: canForward,
+    bad: parsed.badLines,
+  });
 
   return new Response("ok", { status: 200, headers });
 }

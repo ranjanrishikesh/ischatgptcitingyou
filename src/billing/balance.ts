@@ -111,6 +111,19 @@ export async function markBatchSeen(
 }
 
 /**
+ * Release a batch claim so a redelivery can be metered again. Called when
+ * metering fails AFTER the claim was taken, so a transient error doesn't make a
+ * batch permanently free-but-forwarded for the whole replay window.
+ */
+export async function deleteBatchSeen(orgId: string, token: string): Promise<void> {
+  try {
+    await redis().del(`seen:{${orgId}}:${token}`);
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
  * Record events that could NOT be metered (Redis down, seed/retry exhausted), so
  * silent free usage is visible/alertable instead of vanishing into a log line.
  * Best-effort: never throws.
