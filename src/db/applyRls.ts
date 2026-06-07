@@ -18,7 +18,12 @@
 import postgres from "postgres";
 import { TENANT_TABLES } from "./schema";
 
-const GUC = "current_setting('app.current_org', true)::uuid";
+// nullif(..., '') so BOTH an unset GUC (NULL) and an empty-string GUC fail CLOSED
+// to zero rows. A custom GUC reverts to '' (not NULL) on a pooled connection that
+// earlier ran a local set_config, so without nullif, ''::uuid would THROW instead
+// of yielding no rows — breaking any out-of-context read (withSystem) on a reused
+// connection. nullif maps '' -> NULL -> `org_id = NULL` -> no rows.
+const GUC = "nullif(current_setting('app.current_org', true), '')::uuid";
 
 async function main() {
   const url = process.env.DATABASE_OWNER_URL ?? process.env.DATABASE_URL;
