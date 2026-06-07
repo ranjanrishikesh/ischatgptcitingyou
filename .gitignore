@@ -29,6 +29,3 @@ coverage/
 .vercel
 .idea/
 .vscode/
-
-# pnpm (repo uses npm)
-pnpm-lock.yaml

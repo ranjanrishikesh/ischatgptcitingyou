@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.9.0",
   "description": "AI-crawler traffic pipeline. Forwards bot/AI page-view traffic from your site to your analytics destination. Self-host or hosted. Stores no traffic data.",
   "scripts": {
     "dev": "next dev",
@@ -43,5 +44,8 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "sharp"]
   }
 }
