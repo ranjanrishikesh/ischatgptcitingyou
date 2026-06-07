@@ -123,10 +123,15 @@ export async function POST(
         fresh = false; // replay / concurrent delivery — already handled
       } else {
         let d = await debitEvents(src.orgId, billable);
-        let tries = 0;
-        while (d.needsSeed && tries++ < 3) {
-          await seedHotBalance(src.orgId, await getBalanceMicros(src.orgId));
-          d = await debitEvents(src.orgId, billable);
+        if (d.needsSeed) {
+          // Fetch the authoritative balance ONCE (it doesn't change within this
+          // sub-ms loop); seeding is NX so re-seeding the same value is safe.
+          const authoritative = await getBalanceMicros(src.orgId);
+          let tries = 0;
+          while (d.needsSeed && tries++ < 3) {
+            await seedHotBalance(src.orgId, authoritative);
+            d = await debitEvents(src.orgId, billable);
+          }
         }
         if (d.needsSeed) {
           await deleteBatchSeen(src.orgId, token); // let a redelivery re-meter

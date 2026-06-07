@@ -32,9 +32,6 @@ async function onPaymentSucceeded(pi: Stripe.PaymentIntent): Promise<void> {
   const micros = pi.metadata?.micros;
   if (!orgId || (kind !== "purchase" && kind !== "recharge") || !micros) return;
 
-  // The charge settled — release the recharge marker so future dips can recharge.
-  if (kind === "recharge") await clearRechargePending(orgId);
-
   const amount = BigInt(micros);
   const res = await appendLedger(orgId, {
     kind,
@@ -42,8 +39,14 @@ async function onPaymentSucceeded(pi: Stripe.PaymentIntent): Promise<void> {
     idempotencyKey: `stripe_pi:${pi.id}`,
     stripePaymentIntentId: pi.id,
   });
-  if (!res.applied) return; // duplicate delivery — already credited (and emailed)
 
+  // Release the recharge marker ONLY AFTER the credit is durably committed
+  // (appendLedger returning means its tx committed). Clearing it before the
+  // commit would let a concurrent reconcile see "no marker + un-credited
+  // balance" and start a SECOND recharge — a double charge.
+  if (kind === "recharge") await clearRechargePending(orgId);
+
+  if (!res.applied) return; // duplicate delivery — already credited (and emailed)
   await setHotBalance(orgId, res.balanceMicros);
   const email = await getOrgOwnerEmail(orgId);
   if (email) {

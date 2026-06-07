@@ -77,6 +77,10 @@ async function persistRotatedRefresh(
   d: ResolvedDest,
   newRefresh: Secret<string>,
 ): Promise<void> {
+  // org.wrappedDek belongs to the REQUEST org; the AAD binds to the row's own
+  // org. They must be the same tenant (RLS scopes resolveDestinations to orgId),
+  // so assert rather than silently mixing crypto contexts.
+  if (d.rowOrgId !== orgId) throw new Error("persistRotatedRefresh: tenant mismatch");
   const ct = await encryptTenantSecret(
     getKekProvider(),
     { keyId: org.kekKeyId, ciphertext: org.wrappedDek },
@@ -103,7 +107,7 @@ async function getAccessToken(
   const now = Date.now();
   const neg = accessNegCache.get(d.destId);
   if (neg && neg > now) throw new Error("google refresh recently failed; backing off");
-  const cacheKey = `${d.destId}:${cipherHash}`;
+  const cacheKey = `${orgId}:${d.destId}:${cipherHash}`;
   const hit = accessCache.get(cacheKey);
   if (hit && hit.expires > now) return hit.secret;
 
@@ -122,7 +126,10 @@ async function getAccessToken(
       console.error("persist rotated refresh failed", { destId: d.destId, err: (e as Error).message });
     }
   }
-  const ttl = Math.min(ACCESS_TTL_MS, Math.max(0, (t.expiresInSec - 60) * 1000));
+  // Guard a malformed/short expiry so we don't cache a 0-ms TTL and then refresh
+  // on every batch (hammering Google's token endpoint).
+  const expSec = Number.isFinite(t.expiresInSec) && t.expiresInSec > 0 ? t.expiresInSec : 3600;
+  const ttl = Math.min(ACCESS_TTL_MS, Math.max(0, (expSec - 60) * 1000));
   accessCache.set(cacheKey, { secret: t.accessToken, expires: now + ttl });
   return t.accessToken;
 }
@@ -190,7 +197,9 @@ async function decryptKey(
 ): Promise<Secret<string>> {
   const now = Date.now();
   sweepCaches(now); // evict expired so idle secrets don't linger past TTL
-  const cacheKey = `${d.destId}:${cipherHash}`; // busts on credential rotation
+  // Org-scoped (defence-in-depth): even if RLS ever leaked a cross-org row, a
+  // cache hit can never hand org B a credential cached under org A.
+  const cacheKey = `${orgId}:${d.destId}:${cipherHash}`; // busts on credential rotation
   const hit = keyCache.get(cacheKey);
   if (hit && hit.expires > now) return hit.secret;
 

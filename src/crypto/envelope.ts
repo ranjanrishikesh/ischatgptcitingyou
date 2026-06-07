@@ -67,12 +67,15 @@ export function aeadDecrypt(blob: Buffer, key: Buffer, context: EncryptionContex
   return Buffer.concat([decipher.update(ct), decipher.final()]); // throws on auth failure
 }
 
-/** Constant-time buffer compare (for MAC/secret verification paths). */
+/**
+ * Constant-time buffer compare (for MAC/secret verification paths). Inputs are
+ * always fixed-length digests/MACs (callers pre-equalize length: hashBearer ->
+ * fixed hex, ingest-id MAC length pre-checked), so a length difference carries no
+ * secret and we return false directly. (timingSafeEqual throws on a length
+ * mismatch, hence the explicit guard — but we do NOT fake a same-buffer compare,
+ * which would be meaningless.)
+ */
 export function constantTimeEqual(a: Buffer, b: Buffer): boolean {
-  if (a.length !== b.length) {
-    // Still do a compare to keep timing uniform, then return false.
-    timingSafeEqual(a, a);
-    return false;
-  }
+  if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
 }
