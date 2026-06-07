@@ -9,9 +9,9 @@
 export async function register(): Promise<void> {
   // Don't probe during the build phase; only at real server start.
   if (process.env.NEXT_PHASE === "phase-production-build") return;
-  // Node runtime only (assertPosture opens a DB connection).
-  if (process.env.NEXT_RUNTIME && process.env.NEXT_RUNTIME !== "nodejs") return;
-
-  const { assertPosture } = await import("@/config/assertPosture");
-  await assertPosture(); // throws in hosted mode if any control is down -> no boot
+  // Load the node-only probe ONLY in the node runtime, via a dedicated module —
+  // so the bundler never pulls postgres/net into a non-node (edge) bundle.
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    await import("./instrumentation.node"); // throws in hosted mode if posture is down -> no boot
+  }
 }

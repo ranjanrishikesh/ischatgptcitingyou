@@ -10,13 +10,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
 
   secret-scan:
     # Backstop: no real-looking credentials may land in the tree. The Secret
@@ -52,18 +53,19 @@ jobs:
       RUNTIME_DB_ROLE: app_runtime
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - run: npm ci
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
       - name: create non-owner runtime role
         run: |
           PGPASSWORD=postgres psql -h localhost -U postgres -d icy -c \
             "CREATE ROLE app_runtime LOGIN PASSWORD 'runtime'; GRANT CONNECT ON DATABASE icy TO app_runtime; GRANT USAGE ON SCHEMA public TO app_runtime;"
       - name: apply migrations (as owner)
-        run: npm run db:migrate
+        run: pnpm db:migrate
         env: { DATABASE_URL: postgres://postgres:postgres@localhost:5432/icy }
-      - run: npm run db:rls
+      - run: pnpm db:rls
       - name: isolation self-test (must fail closed)
-        run: npm run isolation:selftest
+        run: pnpm isolation:selftest
         env:
           DATABASE_URL: postgres://app_runtime:runtime@localhost:5432/icy

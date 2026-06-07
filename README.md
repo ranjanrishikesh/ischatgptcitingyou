@@ -55,19 +55,22 @@ See [`THREAT_MODEL.md`](./THREAT_MODEL.md) for the honest limits (esp. self-host
 
 ## Develop
 
+This repo uses **pnpm** (`corepack enable` makes it available; version pinned in
+`package.json` `packageManager`).
+
 ```sh
 cp .env.example .env.local
-npm install
-npm run typecheck
-npm test              # pure-logic units (money, Secret, crypto round-trips)
-npm run dev
+pnpm install
+pnpm typecheck
+pnpm test              # pure-logic units (money, Secret, crypto round-trips)
+pnpm dev
 ```
 
 Database (needs Postgres):
 ```sh
-npm run db:generate && npm run db:migrate   # as owner role
-npm run db:rls                              # apply FORCE RLS + policies
-npm run isolation:selftest                  # prove fail-closed isolation
+pnpm db:migrate          # as owner role (applies committed migrations)
+pnpm db:rls              # apply FORCE RLS + policies
+pnpm isolation:selftest  # prove fail-closed isolation
 ```
 
 ## Status
