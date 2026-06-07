@@ -14,6 +14,7 @@
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push --force",
     "db:rls": "tsx src/db/applyRls.ts",
     "isolation:selftest": "tsx src/db/isolationSelfTest.ts",
     "posture:assert": "tsx src/config/assertPosture.ts"

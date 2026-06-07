@@ -59,7 +59,8 @@ jobs:
         run: |
           PGPASSWORD=postgres psql -h localhost -U postgres -d icy -c \
             "CREATE ROLE app_runtime LOGIN PASSWORD 'runtime'; GRANT CONNECT ON DATABASE icy TO app_runtime; GRANT USAGE ON SCHEMA public TO app_runtime;"
-      - run: npm run db:generate && npm run db:migrate
+      - name: create schema (drizzle push, as owner)
+        run: npm run db:push
         env: { DATABASE_URL: postgres://postgres:postgres@localhost:5432/icy }
       - run: npm run db:rls
       - name: isolation self-test (must fail closed)
