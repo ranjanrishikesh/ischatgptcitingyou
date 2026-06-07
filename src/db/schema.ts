@@ -11,6 +11,7 @@
  * Money lives in an append-only `ledgerEntry` table; `balance` is a materialized
  * cache updated in the same transaction as each ledger append.
  */
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   uuid,
@@ -256,7 +257,7 @@ export const balance = pgTable("balance", {
   orgId: uuid("org_id")
     .primaryKey()
     .references(() => organization.id, { onDelete: "cascade" }),
-  balanceMicros: bigint("balance_micros", { mode: "bigint" }).notNull().default(0n),
+  balanceMicros: bigint("balance_micros", { mode: "bigint" }).notNull().default(sql`0`),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -275,8 +276,8 @@ export const autoRechargeConfig = pgTable("auto_recharge_config", {
     .references(() => organization.id, { onDelete: "cascade" }),
   enabled: boolean("enabled").notNull().default(false),
   // Defaults match the locked policy: trigger at $5, top up to $20.
-  thresholdMicros: bigint("threshold_micros", { mode: "bigint" }).notNull().default(5_000_000n),
-  targetMicros: bigint("target_micros", { mode: "bigint" }).notNull().default(20_000_000n),
+  thresholdMicros: bigint("threshold_micros", { mode: "bigint" }).notNull().default(sql`5000000`),
+  targetMicros: bigint("target_micros", { mode: "bigint" }).notNull().default(sql`20000000`),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
