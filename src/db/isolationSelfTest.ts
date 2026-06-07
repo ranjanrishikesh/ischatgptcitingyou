@@ -150,15 +150,27 @@ async function main() {
                values (${orgA}, ${srcA}, ${destA})`;
     });
 
-    // (7) Append-only: UPDATE on ledger_entry must affect ZERO rows (RLS denies).
+    // (7) Append-only: an UPDATE on ledger_entry must NOT mutate any row. The
+    // runtime role has no UPDATE privilege (belt) AND no UPDATE policy (suspenders),
+    // so the attempt either throws `permission denied` or matches zero rows — both
+    // prove append-only. Run the UPDATE in its OWN tx (a privilege error aborts it).
     await sql.begin(async (tx) => {
       await tx`select set_config('app.current_org', ${orgA}, true)`;
       await tx`insert into ledger_entry (org_id, kind, amount_micros) values (${orgA}, 'adjustment', 0)`;
-      const upd = await tx`update ledger_entry set amount_micros = 1 where org_id = ${orgA}`;
-      if (upd.count !== 0) {
-        throw new IsolationError(`ledger_entry not append-only: UPDATE affected ${upd.count} rows`);
-      }
     });
+    let mutated = true;
+    try {
+      await sql.begin(async (tx) => {
+        await tx`select set_config('app.current_org', ${orgA}, true)`;
+        const upd = await tx`update ledger_entry set amount_micros = 1 where org_id = ${orgA}`;
+        mutated = (upd.count ?? 0) > 0;
+      });
+    } catch {
+      mutated = false; // permission denied -> append-only holds
+    }
+    if (mutated) {
+      throw new IsolationError("ledger_entry not append-only: UPDATE mutated rows");
+    }
 
     // eslint-disable-next-line no-console
     console.log(
