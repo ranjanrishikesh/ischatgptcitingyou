@@ -2,9 +2,20 @@
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  // better-auth is server-only; keep it external so webpack doesn't try to bundle
-  // its internal kysely adapter (which has a kysely peer-version mismatch).
-  serverExternalPackages: ["better-auth", "@better-auth/kysely-adapter", "kysely"],
+  // Server-only / node-native packages: keep external so the bundler never tries
+  // to resolve their node builtins (e.g. postgres -> `net`/`tls`) into a
+  // non-node bundle, and so better-auth's internal kysely adapter (kysely
+  // peer-version mismatch) isn't bundled.
+  serverExternalPackages: [
+    "better-auth",
+    "@better-auth/kysely-adapter",
+    "kysely",
+    "postgres",
+    "@aws-sdk/client-kms",
+    "@upstash/redis",
+    "stripe",
+    "undici",
+  ],
   // Security headers are applied here at the platform edge. Per-route auth is
   // re-checked inside Server Actions / route handlers — middleware is routing,
   // NOT a security boundary (cf. CVE-2025-29927).
