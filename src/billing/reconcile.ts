@@ -5,7 +5,14 @@
  * auto-recharge if low. The hot drain path never touches Postgres or Stripe.
  */
 import { appendLedger, getBalanceMicros } from "./ledger";
-import { beginFlush, endFlush, setHotBalance, reconOrgs, reconClearIfDrained } from "./balance";
+import {
+  beginFlush,
+  endFlush,
+  setHotBalance,
+  reconOrgs,
+  reconClearIfDrained,
+  markReconcileRun,
+} from "./balance";
 import { maybeAutoRecharge } from "./recharge";
 
 export async function reconcileOrg(orgId: string): Promise<void> {
@@ -27,10 +34,29 @@ export async function reconcileOrg(orgId: string): Promise<void> {
   await maybeAutoRecharge(orgId, bal);
 }
 
-export async function reconcileAll(): Promise<{ orgs: number; errors: number }> {
+/**
+ * Reconcile every queued org within a wall-clock budget. The serverless runtime
+ * hard-kills us at maxDuration — stopping ourselves first means no org is ever
+ * cut off mid-charge (which would wedge its recharge-pending marker for the
+ * TTL). Unprocessed orgs simply stay in RECON_SET for the next tick; the order
+ * is shuffled so a repeatedly-binding budget can't starve the same tail.
+ */
+export async function reconcileAll(budgetMs = 50_000): Promise<{
+  orgs: number;
+  errors: number;
+  skipped: number;
+}> {
+  const deadline = Date.now() + budgetMs;
   const orgs = await reconOrgs();
+  for (let i = orgs.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [orgs[i], orgs[j]] = [orgs[j]!, orgs[i]!];
+  }
   let errors = 0;
+  let processed = 0;
   for (const orgId of orgs) {
+    if (Date.now() >= deadline) break;
+    processed++;
     try {
       await reconcileOrg(orgId);
       await reconClearIfDrained(orgId); // keep queued if a debit raced the flush
@@ -39,5 +65,8 @@ export async function reconcileAll(): Promise<{ orgs: number; errors: number }> 
       console.error("reconcile failed", { orgId, err: (e as Error).message });
     }
   }
-  return { orgs: orgs.length, errors };
+  const skipped = orgs.length - processed;
+  if (skipped > 0) console.warn("reconcile budget exhausted", { processed, skipped });
+  await markReconcileRun();
+  return { orgs: processed, errors, skipped };
 }

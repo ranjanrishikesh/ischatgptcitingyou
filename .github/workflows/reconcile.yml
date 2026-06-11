@@ -1,0 +1,77 @@
+# Billing reconcile trigger.
+#
+# Vercel Hobby caps crons at once/day, but reconciliation (usage flush +
+# auto-recharge) wants minutes-level cadence. The Vercel cron in vercel.json is
+# the daily backstop; this workflow provides the frequent trigger. GitHub
+# schedules are best-effort — runs may be delayed or skipped, which is safe
+# because reconcileAll is idempotent (stable flushId + ledger unique key), and
+# staleness is observable at /api/health (point an uptime monitor at it).
+#
+# Cadence note: this repo is PRIVATE, so every run bills a minimum of 1 Actions
+# minute. */30 ≈ 1,440 min/month — fits the 2,000 free minutes alongside CI.
+# Do NOT tighten below */30 while the repo is private (a */5 schedule burns
+# ~8,640 min/month and silently stops mid-month at the $0 spending limit,
+# degrading billing to the daily backstop). For true 5-min cadence use a free
+# external pinger (e.g. cron-job.org) against the same URL+header, make the
+# repo public, or upgrade Vercel to Pro and restore */5 in vercel.json.
+#
+# Required repo config (enable deliberately, in this order):
+#   secret  CRON_SECRET — must equal the CRON_SECRET env var on Vercel.
+#                         Generate: openssl rand -base64 32   (high entropy —
+#                         this guards a charge-triggering endpoint)
+#   secret  APP_URL     — production origin, https://... only
+#   variable RECONCILE_ENABLED — set to "true" LAST. Gating on a variable keeps
+#                         un-enabled runs at zero billed minutes (skipped jobs
+#                         never start a runner) and makes missing secrets a
+#                         loud FAILURE instead of a silent green skip.
+name: reconcile
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+# Never let two triggers overlap from this side; the endpoint is also
+# concurrency-safe, this just avoids wasted runs.
+concurrency:
+  group: reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: ${{ vars.RECONCILE_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: call /api/cron/reconcile
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          APP_URL: ${{ secrets.APP_URL }}
+        run: |
+          set -euo pipefail
+          # Explicitly enabled, so misconfiguration is a hard failure (a silent
+          # skip here would quietly degrade billing cadence to the daily cron).
+          if [ -z "${CRON_SECRET:-}" ] || [ -z "${APP_URL:-}" ]; then
+            echo "::error::RECONCILE_ENABLED is true but CRON_SECRET/APP_URL secrets are missing"
+            exit 1
+          fi
+          case "$APP_URL" in
+            https://*) ;;
+            *) echo "::error::APP_URL must be https:// (bearer would go cleartext)"; exit 1 ;;
+          esac
+          # curl stderr is suppressed: transport errors print the hostname,
+          # which GitHub's secret masking does NOT redact (it only masks the
+          # exact secret value). Diagnose failures via the exit/HTTP code.
+          code=$(curl -sS -o /tmp/body -w '%{http_code}' \
+            --max-time 90 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/reconcile" 2>/dev/null) || {
+            echo "::error::reconcile request failed (transport error, exit $?)"
+            exit 1
+          }
+          # Body is {orgs,errors,skipped} counts only — safe to echo.
+          cat /tmp/body; echo
+          if [ "$code" != "200" ]; then
+            echo "::error::reconcile returned HTTP $code"
+            exit 1
+          fi

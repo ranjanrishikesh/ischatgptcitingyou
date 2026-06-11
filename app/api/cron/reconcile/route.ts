@@ -1,5 +1,9 @@
-/** Reconciliation cron (Vercel Cron, every 5 min). Flushes usage to the ledger
- *  and triggers auto-recharge. Protected by CRON_SECRET. */
+/** Reconciliation cron. Flushes usage to the ledger and triggers auto-recharge.
+ *  Triggered every ~30 min by GitHub Actions (.github/workflows/reconcile.yml)
+ *  plus a daily Vercel cron backstop (vercel.json — Hobby allows daily only).
+ *  Safe to invoke concurrently/late: flush ids + ledger idempotency keys dedupe,
+ *  and out-of-funds batches are floored (never metered) on the drain path.
+ *  Freshness is observable at /api/health. Protected by CRON_SECRET. */
 import { reconcileAll } from "@/billing/reconcile";
 import { constantTimeEqual } from "@/crypto/envelope";
 
