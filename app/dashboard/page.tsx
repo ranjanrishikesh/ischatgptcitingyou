@@ -4,7 +4,12 @@ import { listProjects } from "@/services/projects";
 import { listSources } from "@/services/sources";
 import { listDestinations } from "@/services/destinations";
 import { listRoutes } from "@/services/routes";
+import { isHosted } from "@/config/deployMode";
+import { getBalanceMicros } from "@/billing/ledger";
+import { getAutoRechargeConfig } from "@/billing/autoRecharge";
+import { formatUsd, microsToEvents, MICRO_PER_DOLLAR } from "@/billing/money";
 import { CreateSourceForm, ConnectPostHogForm, ConnectGoogle, CreateRouteForm } from "./forms";
+import { SaveCardForm, BuyPackForm, AutoRechargeForm, SignOutButton } from "./billing";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -15,11 +20,14 @@ export default async function Dashboard() {
   const orgId = await defaultOrg(user.id);
   if (!orgId) return <main style={{ padding: 24 }}>No organization provisioned.</main>;
 
-  const [projects, sources, dests, routes] = await Promise.all([
+  const hosted = isHosted();
+  const [projects, sources, dests, routes, balance, recharge] = await Promise.all([
     listProjects(orgId),
     listSources(orgId),
     listDestinations(orgId),
     listRoutes(orgId),
+    hosted ? getBalanceMicros(orgId) : Promise.resolve(0n),
+    hosted ? getAutoRechargeConfig(orgId) : Promise.resolve(null),
   ]);
   const projectId = projects[0]?.id ?? "";
 
@@ -27,8 +35,26 @@ export default async function Dashboard() {
     <main style={{ fontFamily: "system-ui", maxWidth: 820, margin: "2rem auto", padding: "0 1rem" }}>
       <h1>Dashboard</h1>
       <p>
-        Signed in as {user.email} · org <code>{orgId}</code>
+        Signed in as {user.email} · org <code>{orgId}</code> · <SignOutButton />
       </p>
+
+      {hosted && (
+        <>
+          <h2>Billing</h2>
+          <p>
+            Balance: <b>{formatUsd(balance)}</b> (≈ {microsToEvents(balance).toLocaleString()}{" "}
+            events left)
+          </p>
+          <SaveCardForm orgId={orgId} />
+          <BuyPackForm orgId={orgId} />
+          <AutoRechargeForm
+            orgId={orgId}
+            enabled={recharge?.enabled ?? false}
+            thresholdUsd={Number((recharge?.thresholdMicros ?? 5_000_000n) / MICRO_PER_DOLLAR)}
+            targetUsd={Number((recharge?.targetMicros ?? 20_000_000n) / MICRO_PER_DOLLAR)}
+          />
+        </>
+      )}
 
       <h2>Sources</h2>
       <ul>
