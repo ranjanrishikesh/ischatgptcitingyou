@@ -22,6 +22,8 @@
   },
   "dependencies": {
     "@aws-sdk/client-kms": "^3.658.0",
+    "@stripe/react-stripe-js": "^6.6.0",
+    "@stripe/stripe-js": "^9.8.0",
     "@upstash/redis": "^1.34.0",
     "better-auth": "^1.1.0",
     "drizzle-orm": "^0.45.2",
@@ -46,6 +48,9 @@
     "node": ">=20.0.0"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "sharp"]
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp"
+    ]
   }
 }

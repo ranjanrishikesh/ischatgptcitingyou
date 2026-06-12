@@ -54,6 +54,9 @@ export default function LoginPage() {
         </button>
       </div>
       {err && <p style={{ color: "crimson" }}>{err}</p>}
+      <p>
+        <a href="/reset-password">Forgot password?</a>
+      </p>
     </main>
   );
 }

@@ -90,6 +90,23 @@ export async function assertPosture(): Promise<void> {
   if (!process.env.UPSTASH_REDIS_REST_TOKEN) failures.push("UPSTASH_REDIS_REST_TOKEN required");
   if (!process.env.INGEST_ID_PEPPER) failures.push("INGEST_ID_PEPPER required");
 
+  // Auth must be verified at boot, not discovered as a 500 on the first
+  // sign-in: better-auth hard-rejects a missing/short secret in production,
+  // and BETTER_AUTH_URL is the base for OAuth redirect URIs.
+  if ((process.env.BETTER_AUTH_SECRET ?? "").length < 32) {
+    failures.push("BETTER_AUTH_SECRET required, >=32 chars (openssl rand -base64 32)");
+  }
+  if (!(process.env.BETTER_AUTH_URL ?? "").startsWith("https://")) {
+    failures.push("BETTER_AUTH_URL must be the canonical https:// production origin");
+  }
+  // Reconcile cadence (usage flush + auto-recharge) authenticates with this.
+  if (!process.env.CRON_SECRET) failures.push("CRON_SECRET required in hosted mode");
+  // Email-per-charge is the chosen mitigation for uncapped auto-recharge; a
+  // silently no-op'd email provider removes that safety net.
+  if (!process.env.RESEND_API_KEY) {
+    failures.push("RESEND_API_KEY required in hosted mode (billing emails are the no-cap mitigation)");
+  }
+
   try {
     await probeRls();
   } catch (e) {
