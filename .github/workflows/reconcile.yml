@@ -9,6 +9,9 @@
 #
 # Cadence note: this repo is PRIVATE, so every run bills a minimum of 1 Actions
 # minute. */30 ≈ 1,440 min/month — fits the 2,000 free minutes alongside CI.
+# PAIRED VALUE: /api/health alarms when reconcile is older than STALE_AFTER_MS
+# (45 min, app/api/health/route.ts) — if you slow this schedule below that,
+# raise the threshold too or the health check will flap 503 every cycle.
 # Do NOT tighten below */30 while the repo is private (a */5 schedule burns
 # ~8,640 min/month and silently stops mid-month at the $0 spending limit,
 # degrading billing to the daily backstop). For true 5-min cadence use a free

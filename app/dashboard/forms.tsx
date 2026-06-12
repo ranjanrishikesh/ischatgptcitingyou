@@ -1,16 +1,6 @@
 "use client";
 import { useState } from "react";
-
-async function postJson(url: string, body: unknown) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((json as { error?: string }).error ?? `status ${res.status}`);
-  return json;
-}
+import { postJson } from "./http";
 
 export function CreateSourceForm({ orgId, projectId }: { orgId: string; projectId: string }) {
   const [out, setOut] = useState<{ drainUrl: string; bearer: string } | null>(null);

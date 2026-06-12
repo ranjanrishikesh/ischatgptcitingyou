@@ -4,7 +4,7 @@
  */
 import { eq } from "drizzle-orm";
 import { withOrg } from "../db/client";
-import { autoRechargeConfig } from "../db/schema";
+import { autoRechargeConfig, balance } from "../db/schema";
 import { AUTO_RECHARGE_THRESHOLD_MICROS, AUTO_RECHARGE_TARGET_MICROS, dollars } from "./money";
 
 // Bounds so a typo or hostile member can't configure a card-draining or
@@ -44,6 +44,38 @@ export async function getAutoRechargeConfig(orgId: string): Promise<AutoRecharge
     thresholdMicros: r?.thresholdMicros ?? AUTO_RECHARGE_THRESHOLD_MICROS,
     targetMicros: r?.targetMicros ?? AUTO_RECHARGE_TARGET_MICROS,
   };
+}
+
+export interface BillingSummary {
+  balanceMicros: bigint;
+  recharge: AutoRechargeConfig;
+}
+
+/** Balance + auto-recharge config in ONE org-scoped transaction (dashboard read). */
+export async function getBillingSummary(orgId: string): Promise<BillingSummary> {
+  return withOrg(orgId, async (db) => {
+    const balRows = await db
+      .select({ b: balance.balanceMicros })
+      .from(balance)
+      .where(eq(balance.orgId, orgId));
+    const cfgRows = await db
+      .select({
+        enabled: autoRechargeConfig.enabled,
+        thresholdMicros: autoRechargeConfig.thresholdMicros,
+        targetMicros: autoRechargeConfig.targetMicros,
+      })
+      .from(autoRechargeConfig)
+      .where(eq(autoRechargeConfig.orgId, orgId));
+    const r = cfgRows[0];
+    return {
+      balanceMicros: balRows[0]?.b ?? 0n,
+      recharge: {
+        enabled: r?.enabled ?? false,
+        thresholdMicros: r?.thresholdMicros ?? AUTO_RECHARGE_THRESHOLD_MICROS,
+        targetMicros: r?.targetMicros ?? AUTO_RECHARGE_TARGET_MICROS,
+      },
+    };
+  });
 }
 
 export async function setAutoRechargeConfig(

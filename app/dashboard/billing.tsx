@@ -9,24 +9,20 @@ import { useState } from "react";
 import { loadStripe } from "@stripe/stripe-js";
 import { Elements, PaymentElement, useStripe, useElements } from "@stripe/react-stripe-js";
 import { authClient } from "@/auth/client";
+import { PACKS_MICROS, formatUsd } from "@/billing/money";
+import { postJson } from "./http";
 
 const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "";
 const stripePromise = publishableKey ? loadStripe(publishableKey) : null;
 
-async function postJson(url: string, body: unknown) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((json as { error?: string }).error ?? `status ${res.status}`);
-  return json as { clientSecret?: string; ok?: boolean };
-}
-
 const box = { border: "1px solid #ccc", padding: 12, margin: "8px 0" } as const;
 
-/** Confirms a SetupIntent or PaymentIntent inside an <Elements> provider. */
+/**
+ * Confirms a SetupIntent or PaymentIntent inside an <Elements> provider.
+ * `redirect: "if_required"` keeps plain card flows on this page (we navigate
+ * to the result banner ourselves); 3DS-style flows hard-redirect to the
+ * return_url, where the dashboard reads `redirect_status` for the banner.
+ */
 function ConfirmForm({ kind, label }: { kind: "setup" | "payment"; label: string }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -45,11 +41,16 @@ function ConfirmForm({ kind, label }: { kind: "setup" | "payment"; label: string
           const params = {
             elements,
             confirmParams: { return_url: `${window.location.origin}/dashboard` },
+            redirect: "if_required" as const,
           };
           const res =
             kind === "setup" ? await stripe.confirmSetup(params) : await stripe.confirmPayment(params);
-          if (res.error) setErr(res.error.message ?? "failed");
-          setBusy(false);
+          if (res.error) {
+            setErr(res.error.message ?? "failed");
+            setBusy(false);
+          } else {
+            window.location.assign("/dashboard?redirect_status=succeeded");
+          }
         }}
       >
         {label}
@@ -59,31 +60,50 @@ function ConfirmForm({ kind, label }: { kind: "setup" | "payment"; label: string
   );
 }
 
-export function SaveCardForm({ orgId }: { orgId: string }) {
+/** One intent flow: action buttons fetch a clientSecret, then Elements confirms it. */
+function IntentForm({
+  title,
+  blurb,
+  kind,
+  confirmLabel,
+  actions,
+}: {
+  title: string;
+  blurb: string;
+  kind: "setup" | "payment";
+  confirmLabel: string;
+  actions: { label: string; getSecret: () => Promise<Record<string, unknown>> }[];
+}) {
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   if (!stripePromise) return null;
   return (
     <div style={box}>
-      <strong>Card on file</strong>
-      <p style={{ margin: "4px 0" }}>Required for auto-recharge. Stored by Stripe, not by us.</p>
+      <strong>{title}</strong>
+      <p style={{ margin: "4px 0" }}>{blurb}</p>
       {!clientSecret ? (
-        <button
-          onClick={async () => {
-            setErr(null);
-            try {
-              const r = await postJson("/api/billing/setup-intent", { orgId });
-              setClientSecret(r.clientSecret ?? null);
-            } catch (e) {
-              setErr((e as Error).message);
-            }
-          }}
-        >
-          Add / replace card
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          {actions.map((a) => (
+            <button
+              key={a.label}
+              onClick={async () => {
+                setErr(null);
+                setClientSecret(null);
+                try {
+                  const r = await a.getSecret();
+                  setClientSecret((r.clientSecret as string) ?? null);
+                } catch (e) {
+                  setErr((e as Error).message);
+                }
+              }}
+            >
+              {a.label}
+            </button>
+          ))}
+        </div>
       ) : (
         <Elements stripe={stripePromise} options={{ clientSecret }}>
-          <ConfirmForm kind="setup" label="Save card" />
+          <ConfirmForm kind={kind} label={confirmLabel} />
         </Elements>
       )}
       {err && <p style={{ color: "crimson" }}>{err}</p>}
@@ -91,36 +111,32 @@ export function SaveCardForm({ orgId }: { orgId: string }) {
   );
 }
 
-export function BuyPackForm({ orgId }: { orgId: string }) {
-  const [clientSecret, setClientSecret] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  if (!stripePromise) return null;
-  const buy = async (packMicros: string) => {
-    setErr(null);
-    setClientSecret(null);
-    try {
-      const r = await postJson("/api/billing/buy-pack", { orgId, packMicros });
-      setClientSecret(r.clientSecret ?? null);
-    } catch (e) {
-      setErr((e as Error).message);
-    }
-  };
+export function SaveCardForm({ orgId }: { orgId: string }) {
   return (
-    <div style={box}>
-      <strong>Buy credits</strong>
-      <p style={{ margin: "4px 0" }}>$1 = 10,000 forwarded events. Credits never expire.</p>
-      {!clientSecret ? (
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => buy("50000000")}>$50 pack</button>
-          <button onClick={() => buy("100000000")}>$100 pack</button>
-        </div>
-      ) : (
-        <Elements stripe={stripePromise} options={{ clientSecret }}>
-          <ConfirmForm kind="payment" label="Pay" />
-        </Elements>
-      )}
-      {err && <p style={{ color: "crimson" }}>{err}</p>}
-    </div>
+    <IntentForm
+      title="Card on file"
+      blurb="Required for auto-recharge. Stored by Stripe, not by us."
+      kind="setup"
+      confirmLabel="Save card"
+      actions={[
+        { label: "Add / replace card", getSecret: () => postJson("/api/billing/setup-intent", { orgId }) },
+      ]}
+    />
+  );
+}
+
+export function BuyPackForm({ orgId }: { orgId: string }) {
+  return (
+    <IntentForm
+      title="Buy credits"
+      blurb="$1 = 10,000 forwarded events. Credits never expire."
+      kind="payment"
+      confirmLabel="Pay"
+      actions={PACKS_MICROS.map((p) => ({
+        label: `${formatUsd(p)} pack`,
+        getSecret: () => postJson("/api/billing/buy-pack", { orgId, packMicros: p.toString() }),
+      }))}
+    />
   );
 }
 

@@ -148,7 +148,9 @@ On Vercel **Pro**, skip this and set `vercel.json` back to `*/5 * * * *`.
 - Point a free uptime monitor (e.g. UptimeRobot) at
   `https://<your-domain>/api/health`. It returns **503 when billing
   reconciliation has stalled** (>45 min) — that's the "auto-recharge is not
-  running" alarm.
+  running" alarm. The 45-minute threshold assumes the 30-minute GitHub
+  schedule from step 9; if you change one, change the other
+  (`STALE_AFTER_MS` in `app/api/health/route.ts`).
 - Smoke test: sign up → dashboard → create source → connect PostHog → add the
   drain (below) → events appear in PostHog → balance ticks down.
 
