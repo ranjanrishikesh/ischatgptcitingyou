@@ -113,6 +113,8 @@ export async function POST(
   //      transient error doesn't make a batch permanently free-but-forwarded.
   //    - `hadFunds` only stops forwarding on a POSITIVE out-of-credits; a
   //      metering failure (our problem) still forwards.
+  //    - an out-of-credits batch is NOT metered (DEBIT_LUA floors at zero):
+  //      dropped events are never billed, however long reconcile cadence gets.
   let hadFunds = true;
   let fresh = true;
   if (isHosted() && billable > 0) {

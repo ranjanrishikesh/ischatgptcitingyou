@@ -65,6 +65,12 @@ internet → ingest endpoint · browser → control plane · worker → destinat
 - **Ingest IP trust**: the pre-auth rate limiter keys on the platform-trusted client IP
   (`x-real-ip` / right-most XFF hop), never the spoofable left-most XFF. Self-host operators
   behind a different proxy topology must ensure the same trusted-hop assumption.
+- **Reconcile endpoint** (`/api/cron/reconcile`): guarded only by `CRON_SECRET` (constant-time
+  compare, fail-closed when unset) with no per-route rate limit, so the secret must be high
+  entropy (`openssl rand -base64 32`), never human-chosen. Blast radius of a leaked secret is
+  bounded — flushes are idempotent and recharge is single-flighted + balance-re-checked — so a
+  caller can generate load, not charges. The bigger risk is **cadence loss**: auto-recharge runs
+  only from this cron, so its freshness is exported at `/api/health` for external alerting.
 - **Self-host supply chain**: "no phone-home" stops *us*, not a poisoned dependency. The
   deployable app ships a default-deny egress policy + pinned lockfile + SBOM (M-later), but a
   self-hoster running untrusted deps is outside our control.

@@ -48,8 +48,19 @@ function toSafeNumber(micros: bigint): number {
 // monotonic `used` counter (KEYS[2]), enqueue the org for reconciliation
 // (KEYS[3]=RECON_SET), and decrement the working balance (KEYS[1]). Folding SADD
 // in keeps used-increment and reconcile-membership atomic — no stranded usage.
+//
+// FLOOR: once the balance is already <= 0 the caller will NOT forward, so we
+// must not meter either ('NOFUNDS', no debit) — a customer is never billed for
+// events that were dropped. The org is still SADD'd so the reconcile cron keeps
+// seeing it and auto-recharge fires. Overshoot is therefore bounded to the one
+// batch that crosses zero (acceptable by design), not a whole out-of-funds
+// window — which matters now that reconcile cadence can degrade to daily.
 const DEBIT_LUA = `
 if redis.call('EXISTS', KEYS[1]) == 0 then return 'NOSEED' end
+if tonumber(redis.call('GET', KEYS[1])) <= 0 then
+  redis.call('SADD', KEYS[3], ARGV[2])
+  return 'NOFUNDS'
+end
 redis.call('INCRBY', KEYS[2], ARGV[1])
 redis.call('SADD', KEYS[3], ARGV[2])
 return redis.call('DECRBY', KEYS[1], ARGV[1])
@@ -126,6 +137,10 @@ export async function debitEvents(orgId: string, events: number): Promise<DebitR
   if (res === "NOSEED") {
     return { balanceMicros: 0, hadFunds: false, needsSeed: true };
   }
+  if (res === "NOFUNDS") {
+    // Out of credits: nothing was metered (events won't be forwarded either).
+    return { balanceMicros: 0, hadFunds: false, needsSeed: false };
+  }
   const after = Number(res);
   return { balanceMicros: after, hadFunds: after + cost > 0, needsSeed: false };
 }
@@ -134,6 +149,25 @@ export async function debitEvents(orgId: string, events: number): Promise<DebitR
 export const RECON_SET = "recon:orgs";
 export async function reconOrgs(): Promise<string[]> {
   return (await redis().smembers(RECON_SET)) as string[];
+}
+
+/**
+ * Reconcile freshness marker. The cron cadence can silently degrade (external
+ * trigger misconfigured/disabled -> daily Vercel backstop only), and auto-
+ * recharge fires ONLY from the cron — so staleness must be observable.
+ * /api/health asserts this is recent; point an uptime monitor at it.
+ */
+const RECON_LAST_RUN_KEY = "recon:last_run_ms";
+export async function markReconcileRun(): Promise<void> {
+  try {
+    await redis().set(RECON_LAST_RUN_KEY, Date.now());
+  } catch {
+    /* visibility only — never fail the reconcile over it */
+  }
+}
+export async function reconcileAgeMs(): Promise<number | null> {
+  const t = await redis().get<number>(RECON_LAST_RUN_KEY);
+  return t === null || t === undefined ? null : Date.now() - Number(t);
 }
 
 export interface FlushCapture {
